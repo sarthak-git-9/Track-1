@@ -45,3 +45,35 @@ def test_lookalike_raises_warning(monkeypatch, tmp_path):
     result = site_check.check_site({"url": "https://trusfed.example", "mode": "pasted_url"})
     assert result["category"] == "unsafe"
     assert any(item["check"] == "lookalike" for item in result["evidence"])
+
+def test_google_www_control_matches_reviewed_registry_and_pasted_url_has_no_dom_claim():
+    result = site_check.check_site({
+        "url": "https://www.google.com/",
+        "mode": "pasted_url",
+    })
+    assert result["category"] == "very_safe"
+    official = next(e for e in result["evidence"]
+                    if e["check"] == "official_domain")
+    assert "Exact hostname matches" in official["result"]
+
+    forms = next(e for e in result["evidence"]
+                 if e["check"] == "sensitive_form")
+    assert forms["status"] == "failed"
+    assert "could not be assessed" in forms["result"]
+
+    page = next(e for e in result["evidence"]
+                if e["check"] == "page_content")
+    assert page["status"] == "failed"
+
+
+def test_current_tab_without_snapshot_does_not_claim_dom_was_inspected():
+    result = site_check.check_site({
+        "url": "https://unlisted.example",
+        "mode": "current_tab",
+    })
+    forms = next(e for e in result["evidence"]
+                 if e["check"] == "sensitive_form")
+    page = next(e for e in result["evidence"]
+                if e["check"] == "page_content")
+    assert forms["status"] == "failed"
+    assert page["status"] == "failed"

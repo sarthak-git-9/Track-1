@@ -72,13 +72,21 @@ def _registrable_guess(hostname: str) -> str:
 def check_site(payload: dict[str, Any]) -> dict[str, Any]:
     normalized_url, hostname = normalize_url(str(payload.get("url", "")))
     mode = payload.get("mode", "current_tab")
-    snapshot = payload.get("page_snapshot") or {}
+    raw_snapshot = payload.get("page_snapshot")
+    snapshot_available = (
+        mode == "current_tab"
+        and isinstance(raw_snapshot, dict)
+        and bool(raw_snapshot)
+    )
+    forms_available = (
+        mode == "current_tab"
+        and isinstance(raw_snapshot, dict)
+        and isinstance(raw_snapshot.get("forms"), list)
+    )
+    snapshot = raw_snapshot if isinstance(raw_snapshot, dict) else {}
     title = str(snapshot.get("title", ""))[:300]
     page_text = str(snapshot.get("text", ""))[:15000]
-    forms = snapshot.get("forms", [])
-    if not isinstance(forms, list):
-        forms = []
-    forms = forms[:100]
+    forms = snapshot.get("forms", [])[:100] if forms_available else []
 
     registry = _load_json(OFFICIAL_REGISTRY_PATH, [])
     threat_list = _load_json(THREAT_LIST_PATH, [])
@@ -125,7 +133,7 @@ def check_site(payload: dict[str, Any]) -> dict[str, Any]:
         # Compare the registrable domains, not arbitrary substring matches.
         ratio = difflib.SequenceMatcher(None, registrable, _registrable_guess(official_host)).ratio()
         brand_claimed = bool(brand and re.search(r"(?<!\w)" + re.escape(brand.casefold()) + r"(?!\w)", page_claim))
-        if hostname != official_host and ratio >= 0.78:
+        if _registrable_guess(hostname) != _registrable_guess(official_host) and hostname != official_host and ratio >= 0.78:
             similar_hosts.append((official_host, ratio, entry))
         if brand_claimed:
             suspected_brand = brand
@@ -155,7 +163,20 @@ def check_site(payload: dict[str, Any]) -> dict[str, Any]:
             category = "unsafe"
             reason = "A sensitive form appears to submit to a different hostname."
     else:
-        log("sensitive_form", "current-tab DOM metadata", "No password, OTP or payment field detected in the inspected DOM")
+        if forms_available:
+            log(
+                "sensitive_form",
+                "current-tab DOM metadata",
+                "No password, OTP or payment field detected in the inspected DOM"
+            )
+        else:
+            log(
+                "sensitive_form",
+                "not run",
+                "Form metadata was not supplied or was not inspected; "
+                "sensitive fields could not be assessed",
+                status="failed"
+            )
 
     domain_labels = hostname.split(".")
     punycode_present = any(label.startswith("xn--") for label in domain_labels)
@@ -169,8 +190,15 @@ def check_site(payload: dict[str, Any]) -> dict[str, Any]:
 
     if mode == "pasted_url":
         log("page_content", "not run", "Page not viewed; only address-based checks were performed", status="failed")
-    else:
+    elif snapshot_available:
         log("page_content", "current-tab DOM snapshot", f"Inspected title and up to {len(page_text)} characters of visible text")
+    else:
+        log(
+            "page_content",
+            "not run",
+            "No current-tab DOM snapshot was supplied; only address-based checks were performed",
+            status="failed"
+        )
     log("domain_age", "not configured", "Domain registration lookup is not configured", status="failed")
     log("certificate", "not configured", "Certificate details were not supplied by the browser snapshot", status="failed")
     log("reputation_api", "not configured", "No external reputation provider is configured", status="failed")

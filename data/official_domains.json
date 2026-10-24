@@ -6,5 +6,21 @@
     "reviewed": false,
     "last_reviewed": null,
     "note": "Synthetic fixture only. Never use this entry as a real-world trust decision. Replace with independently reviewed official hostnames before a public demo."
+  },
+  {
+    "hostname": "google.com",
+    "brand": "Google",
+    "source": "https://support.google.com/google-ads/answer/14845?hl=en",
+    "reviewed": true,
+    "last_reviewed": "2026-10-25",
+    "note": "Reviewed seed entry for the prototype's official-domain control test. An exact host match is not a guarantee that every page or transaction is safe."
+  },
+  {
+    "hostname": "www.google.com",
+    "brand": "Google",
+    "source": "https://support.google.com/google-ads/answer/14845?hl=en",
+    "reviewed": true,
+    "last_reviewed": "2026-10-25",
+    "note": "Reviewed seed entry for the prototype's official-domain control test. An exact host match is not a guarantee that every page or transaction is safe."
   }
 ]
