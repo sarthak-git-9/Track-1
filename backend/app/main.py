@@ -1,6 +1,8 @@
 """Bharosa local backend starter. Run from backend/: uvicorn app.main:app --host 127.0.0.1 --port 8765"""
 from __future__ import annotations
 
+import base64
+import binascii
 import time
 import uuid
 from typing import Any
@@ -13,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from .ai import OLLAMA_MODEL, OLLAMA_URL, detect_contextual_entities, model_configured
 from .redaction import apply_redactions, detect_pii, findings_from_model, verify_redaction
+from .pdf_redaction import MAX_PDF_BYTES, PDFRedactionError, extract_pdf_text, redact_pdf
 from .security import ALLOWED_ORIGINS, API_TOKEN, OriginGuardMiddleware, require_token, validate_local_model_url
 from .site_check import check_site
 
@@ -42,6 +45,11 @@ class RedactStartRequest(BaseModel):
     content: str = Field(max_length=MAX_TEXT_CHARS)
 
 
+class PdfRedactStartRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=240)
+    content_b64: str = Field(min_length=1, max_length=((MAX_PDF_BYTES + 2) // 3) * 4)
+
+
 class RedactUpdateRequest(BaseModel):
     session_id: str
     decisions: dict[str, bool] = Field(default_factory=dict)
@@ -54,7 +62,7 @@ class SessionRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     session_id: str
-    format: str = Field(pattern="^(txt|md)$")
+    format: str = Field(pattern="^(txt|md|pdf)$")
 
 
 class SiteCheckRequest(BaseModel):
@@ -85,6 +93,7 @@ def _set_redacted_preview(session: dict[str, Any]) -> None:
     # Mapping stays in memory only and is never returned by the API.
     session["placeholder_mapping"] = mapping
     session["verification"] = None
+    session["redacted_pdf_bytes"] = None
 
 
 @app.get("/health")
@@ -157,6 +166,69 @@ async def redact_start(request: RedactStartRequest) -> dict[str, Any]:
     }
 
 
+@app.post("/redact/pdf/start", dependencies=[Depends(require_token)])
+async def redact_pdf_start(request: PdfRedactStartRequest) -> dict[str, Any]:
+    """Start a local-only session for a searchable PDF."""
+    suffix = request.filename.lower().rsplit(".", 1)[-1] if "." in request.filename else ""
+    if suffix != "pdf":
+        raise HTTPException(status_code=415, detail="Upload a .pdf file to this endpoint.")
+    try:
+        pdf_bytes = base64.b64decode(request.content_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="The PDF upload encoding is invalid.") from exc
+    if not pdf_bytes or len(pdf_bytes) > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="PDF must be non-empty and no larger than 10 MB.")
+    try:
+        extracted_text = extract_pdf_text(pdf_bytes)
+    except PDFRedactionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if len(extracted_text) > MAX_TEXT_CHARS:
+        raise HTTPException(status_code=413, detail="Extracted PDF text exceeds the supported size limit.")
+
+    findings = detect_pii(extracted_text)
+    fixed_values = [item["value"] for item in findings]
+    model_status = "not_configured"
+    if model_configured():
+        raw_candidates, model_status = await detect_contextual_entities(extracted_text, fixed_values)
+        model_candidates = findings_from_model(extracted_text, raw_candidates)
+        known = {(item["type"], item["value"].casefold()) for item in findings}
+        for item in model_candidates:
+            key = (item["type"], item["value"].casefold())
+            if key not in known and not any(
+                existing["value"].casefold() == item["value"].casefold()
+                for existing in findings
+            ):
+                findings.append(item)
+                known.add(key)
+
+    session_id = str(uuid.uuid4())
+    SESSIONS[session_id] = {
+        "created_at": time.time(),
+        "filename": "bharosa-upload.pdf",
+        "original_text": extracted_text,
+        "original_pdf_bytes": pdf_bytes,
+        "redacted_pdf_bytes": None,
+        "document_type": "pdf",
+        "findings": findings,
+        "redacted_text": extracted_text,
+        "placeholder_mapping": {},
+        "verification": None,
+        "has_reviewed": False,
+    }
+    return {
+        "session_id": session_id,
+        "filename": "bharosa-upload.pdf",
+        "findings": findings,
+        "counts_by_type": {
+            kind: sum(1 for item in findings if item["type"] == kind)
+            for kind in sorted({item["type"] for item in findings})
+        },
+        "model_status": model_status,
+        "message": "Review findings from selectable PDF text. Scanned/image-only PDFs are not supported.",
+        "document_type": "pdf",
+    }
+
+
 @app.post("/redact/update", dependencies=[Depends(require_token)])
 async def redact_update(request: RedactUpdateRequest) -> dict[str, Any]:
     session = _get_session(request.session_id)
@@ -201,9 +273,49 @@ async def redact_verify(request: SessionRequest) -> dict[str, Any]:
         session["verification"] = result
         return {**result, "redacted_preview": session["original_text"], "approved_count": 0}
     _set_redacted_preview(session)
+    if session.get("document_type") == "pdf":
+        approved_values = list(dict.fromkeys(
+            item["value"] for item in session["findings"]
+            if item.get("approved") is True and isinstance(item.get("value"), str) and item["value"]
+        ))
+        try:
+            if not approved_values:
+                raise PDFRedactionError("Approve at least one finding to create a redacted PDF.")
+            session["redacted_pdf_bytes"] = redact_pdf(
+                session["original_pdf_bytes"], approved_values
+            )
+            result = {
+                "status": "pass",
+                "problems": [],
+                "risk_notes": [
+                    "Verification checked that approved values are no longer extractable from PDF page text.",
+                    "Images, metadata, form fields, attachments, and other non-text content may still contain sensitive information.",
+                    "Scanned/image-only PDFs are unsupported; review the exported document before sharing.",
+                ],
+                "understandable": True,
+                "amounts_unchanged": None,
+                "iso_dates_unchanged": None,
+                "rounds": 1,
+            }
+        except PDFRedactionError as exc:
+            session["redacted_pdf_bytes"] = None
+            result = {
+                "status": "fail",
+                "problems": [{"type": "pdf_redaction", "detail": str(exc)}],
+                "risk_notes": ["The PDF was not approved for export because redaction or verification failed."],
+                "understandable": True,
+                "amounts_unchanged": None,
+                "iso_dates_unchanged": None,
+                "rounds": 1,
+            }
+        session["verification"] = result
+        return {
+            **result,
+            "redacted_preview": session["redacted_text"],
+            "approved_count": len(approved_values),
+        }
+
     result = verify_redaction(session["original_text"], session["redacted_text"], session["findings"])
-    # Store exactly the text that passed the bounded verifier. Failed output is
-    # retained only as a preview and remains unexportable by the status gate.
     session["redacted_text"] = result.pop("redacted_text", session["redacted_text"])
     session["verification"] = result
     return {**result, "redacted_preview": session["redacted_text"], "approved_count": sum(1 for item in session["findings"] if item["approved"])}
@@ -215,10 +327,18 @@ async def redact_export(request: ExportRequest) -> Response:
     verification = session.get("verification")
     if not session.get("has_reviewed") or not verification or verification.get("status") != "pass":
         raise HTTPException(status_code=409, detail="Review findings and complete a passing verification before exporting.")
-    content = session["redacted_text"].encode("utf-8")
-    media_type = "text/markdown; charset=utf-8" if request.format == "md" else "text/plain; charset=utf-8"
-    # Neutral name: never reuse a potentially sensitive original filename.
-    safe_name = "bharosa-redacted." + request.format
+    if session.get("document_type") == "pdf":
+        if request.format != "pdf" or not session.get("redacted_pdf_bytes"):
+            raise HTTPException(status_code=409, detail="This PDF session can export only a verified redacted PDF.")
+        content = session["redacted_pdf_bytes"]
+        media_type = "application/pdf"
+        safe_name = "bharosa-redacted.pdf"
+    else:
+        if request.format == "pdf":
+            raise HTTPException(status_code=415, detail="This session contains text, not a PDF.")
+        content = session["redacted_text"].encode("utf-8")
+        media_type = "text/markdown; charset=utf-8" if request.format == "md" else "text/plain; charset=utf-8"
+        safe_name = "bharosa-redacted." + request.format
     SESSIONS.pop(request.session_id, None)
     return Response(content=content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{safe_name}"', "Cache-Control": "no-store"})
 
