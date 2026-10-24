@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Bharosa — Trust Before You Share",
+  "version": "0.1.0",
+  "description": "Local-first document redaction and evidence-led website checks.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "action": {
+    "default_title": "Bharosa",
+    "default_popup": "popup.html"
+  }
+}
