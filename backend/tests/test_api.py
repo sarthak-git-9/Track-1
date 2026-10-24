@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 
+import app.redaction as redaction
+import app.main as main
 from app.main import API_TOKEN, app
 
 
@@ -32,3 +34,26 @@ def test_redaction_end_to_end_and_authentication():
         verified = client.post("/redact/verify", headers=headers, json={"session_id": data["session_id"]})
         assert verified.status_code == 200
         assert verified.json()["status"] == "pass"
+
+
+def test_residual_identifier_verification_failure_blocks_export(monkeypatch):
+    with TestClient(app) as client:
+        headers = {"X-Bharosa-Token": API_TOKEN}
+        started = client.post("/redact/start", headers=headers, json={
+            "filename": "synthetic.md", "content": "Test card 4111111111111111.",
+        })
+        data = started.json()
+        decisions = {item["id"]: item["type"] == "card" for item in data["findings"]}
+        client.post("/redact/update", headers=headers, json={
+            "session_id": data["session_id"], "decisions": decisions,
+        })
+        # Model a persistent residual to exercise fail-closed export behavior.
+        monkeypatch.setattr(main, "apply_redactions", lambda original, _findings: (original, {}))
+        monkeypatch.setattr(redaction, "_placeholder_for", lambda item, _findings: item["value"])
+        verified = client.post("/redact/verify", headers=headers, json={"session_id": data["session_id"]})
+        assert verified.json()["status"] == "fail"
+        assert all("4111111111111111" not in str(problem) for problem in verified.json()["problems"])
+        exported = client.post("/redact/export", headers=headers, json={
+            "session_id": data["session_id"], "format": "md",
+        })
+        assert exported.status_code == 409

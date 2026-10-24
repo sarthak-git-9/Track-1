@@ -40,8 +40,56 @@ def luhn_valid(number: str) -> bool:
     return checksum % 10 == 0
 
 
-def _canonical(value: str) -> str:
-    return re.sub(r"[\s-]+", "", value).casefold()
+def _canonical(value: str, kind: str = "other") -> str:
+    """Normalize only presentation separators that are insignificant by type."""
+    if kind in {"card", "aadhaar_candidate", "phone", "account"}:
+        return re.sub(r"[\s-]+", "", value)
+    if kind in {"email", "upi"}:
+        # Email local parts and UPI handles are case-insensitive for this app,
+        # but punctuation and all other characters remain meaningful.
+        return value.casefold()
+    if kind in {"pan", "ifsc"}:
+        return value.casefold()
+    return value
+
+
+def _pattern_for_kind(kind: str, value: str) -> re.Pattern[str]:
+    """Build a type-constrained matcher for approved identifier variants."""
+    escaped = re.escape(value)
+    if kind in {"card", "aadhaar_candidate", "phone", "account"}:
+        digits = re.sub(r"\D", "", value)
+        if not digits:
+            return re.compile(r"(?!)")
+        # Permit only the known insignificant separators between digits. This
+        # prevents a match from spanning punctuation or unrelated document text.
+        body = r"[\s-]*".join(re.escape(digit) for digit in digits)
+        country_prefix = r"\+\s*" if kind == "phone" and value.lstrip().startswith("+") else ""
+        return re.compile(rf"(?<!\d){country_prefix}{body}(?!\d)")
+    return re.compile(escaped, re.I if kind in {"email", "upi", "pan", "ifsc"} else 0)
+
+
+def _placeholder_for(item: dict[str, Any], findings: list[dict[str, Any]]) -> str:
+    kind = str(item.get("type", "other"))
+    approved = [entry for entry in findings if entry.get("approved") is True and isinstance(entry.get("value"), str)]
+    approved.sort(key=lambda entry: len(entry["value"]), reverse=True)
+    counters: defaultdict[str, int] = defaultdict(int)
+    seen: set[tuple[str, str]] = set()
+    for entry in approved:
+        entry_kind = str(entry.get("type", "other"))
+        key = (entry_kind, _canonical(entry["value"], entry_kind))
+        if key in seen:
+            continue
+        seen.add(key)
+        counters[entry_kind] += 1
+        label = {
+            "person": "PERSON", "address": "ADDRESS", "organization": "ORG",
+            "payee": "PERSON", "email": "EMAIL", "phone": "PHONE", "card": "CARD",
+            "account": "ACCOUNT", "pan": "ID", "aadhaar_candidate": "ID",
+            "ifsc": "IFSC", "upi": "UPI", "date_of_birth": "DOB", "other": "ENTITY",
+        }.get(entry_kind, "ENTITY")
+        if entry_kind == kind and key == (kind, _canonical(str(item["value"]), kind)):
+            return f"[{label}_{counters[entry_kind]}]"
+    return "[ENTITY_1]"
 
 
 def detect_pii(text: str) -> list[dict[str, Any]]:
@@ -85,7 +133,7 @@ def detect_pii(text: str) -> list[dict[str, Any]]:
 
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     for start, end, value, kind, _priority in chosen:
-        key = (kind, _canonical(value))
+        key = (kind, _canonical(value, kind))
         if key not in grouped:
             grouped[key] = {
                 "id": str(uuid.uuid4()), "value": value, "type": kind,
@@ -129,7 +177,7 @@ def apply_redactions(original_text: str, findings: list[dict[str, Any]]) -> tupl
     for item in approved:
         value = item["value"]
         kind = item.get("type", "other")
-        key = (kind, _canonical(value))
+        key = (kind, _canonical(value, kind))
         if key not in placeholders:
             counters[kind] += 1
             label = {
@@ -141,31 +189,64 @@ def apply_redactions(original_text: str, findings: list[dict[str, Any]]) -> tupl
             placeholders[key] = f"[{label}_{counters[kind]}]"
         placeholder = placeholders[key]
         originals_to_placeholders[value] = placeholder
-        output = re.sub(re.escape(value), lambda _m, p=placeholder: p, output, flags=re.I)
+        output = _pattern_for_kind(kind, value).sub(lambda _m, p=placeholder: p, output)
     return output, originals_to_placeholders
 
 
-def verify_redaction(original_text: str, redacted_text: str, findings: list[dict[str, Any]]) -> dict[str, Any]:
+def verify_redaction(original_text: str, redacted_text: str, findings: list[dict[str, Any]], *, max_rounds: int = 3) -> dict[str, Any]:
+    """Independently rescan output and make at most three safe repair passes.
+
+    The return value never includes identifier contents. ``rounds`` records how
+    many scan/repair rounds were used; a remaining leak always fails closed.
+    """
     approved = [item for item in findings if item.get("approved") is True and item.get("value")]
-    leaks = []
-    redacted_folded = redacted_text.casefold()
+    output = redacted_text
+    rounds = max(1, min(int(max_rounds), 3))
+    rounds_used = 0
+    residual_types: set[str] = set()
+    for _round in range(rounds):
+        rounds_used += 1
+        found = False
+        for item in approved:
+            kind = str(item.get("type", "other"))
+            pattern = _pattern_for_kind(kind, str(item["value"]))
+            if pattern.search(output):
+                found = True
+                output = pattern.sub(lambda _m: _placeholder_for(item, findings), output)
+        # Independently detect PII-shaped candidates too. Only fail for an
+        # output candidate matching an approved canonical identifier.
+        approved_keys = {(str(item.get("type", "other")), _canonical(str(item["value"]), str(item.get("type", "other")))) for item in approved}
+        for candidate in detect_pii(output):
+            key = (candidate["type"], _canonical(candidate["value"], candidate["type"]))
+            if key in approved_keys:
+                found = True
+                residual_types.add(candidate["type"])
+        if not found:
+            break
+    # Final independent scan, after the retry budget, decides pass/fail.
     for item in approved:
-        if item["value"].casefold() in redacted_folded:
-            leaks.append({"type": "leak", "value": item["value"], "detail": f"Approved value still appears: {item['value']}"})
+        kind = str(item.get("type", "other"))
+        if _pattern_for_kind(kind, str(item["value"])).search(output):
+            residual_types.add(kind)
+    approved_keys = {(str(item.get("type", "other")), _canonical(str(item["value"]), str(item.get("type", "other")))) for item in approved}
+    for candidate in detect_pii(output):
+        if (candidate["type"], _canonical(candidate["value"], candidate["type"])) in approved_keys:
+            residual_types.add(candidate["type"])
     # Basic integrity guard for common currency amounts and ISO dates; review notes
     # are advisory because formatting can be changed intentionally by a user.
     amount_pattern = re.compile(r"(?:₹|INR\s*)\s?\d[\d,]*(?:\.\d{1,2})?", re.I)
     date_pattern = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
     original_amounts = amount_pattern.findall(original_text)
-    final_amounts = amount_pattern.findall(redacted_text)
     original_dates = date_pattern.findall(original_text)
-    final_dates = date_pattern.findall(redacted_text)
-    integrity_ok = original_amounts == final_amounts and original_dates == final_dates
+    integrity_ok = original_amounts == amount_pattern.findall(output) and original_dates == date_pattern.findall(output)
+    leaks = [{"type": kind, "detail": "An approved identifier remains after verification."} for kind in sorted(residual_types)]
     return {
         "status": "pass" if not leaks and integrity_ok else "fail",
         "problems": leaks + ([] if integrity_ok else [{"type": "integrity", "detail": "Some currency amounts or ISO dates changed; inspect the preview."}]),
         "risk_notes": ["Detection is best-effort; review the output before sharing."],
         "understandable": True,
-        "amounts_unchanged": original_amounts == final_amounts,
-        "iso_dates_unchanged": original_dates == final_dates,
+        "amounts_unchanged": original_amounts == amount_pattern.findall(output),
+        "iso_dates_unchanged": original_dates == date_pattern.findall(output),
+        "rounds": rounds_used,
+        "redacted_text": output,
     }
