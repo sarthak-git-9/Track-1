@@ -202,6 +202,9 @@ async def redact_verify(request: SessionRequest) -> dict[str, Any]:
         return {**result, "redacted_preview": session["original_text"], "approved_count": 0}
     _set_redacted_preview(session)
     result = verify_redaction(session["original_text"], session["redacted_text"], session["findings"])
+    # Store exactly the text that passed the bounded verifier. Failed output is
+    # retained only as a preview and remains unexportable by the status gate.
+    session["redacted_text"] = result.pop("redacted_text", session["redacted_text"])
     session["verification"] = result
     return {**result, "redacted_preview": session["redacted_text"], "approved_count": sum(1 for item in session["findings"] if item["approved"])}
 
