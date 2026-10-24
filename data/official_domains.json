@@ -1,0 +1,10 @@
+[
+  {
+    "hostname": "example-bank.test",
+    "brand": "Example Bank",
+    "source": "https://example.invalid/official-domain-proof",
+    "reviewed": false,
+    "last_reviewed": null,
+    "note": "Synthetic fixture only. Never use this entry as a real-world trust decision. Replace with independently reviewed official hostnames before a public demo."
+  }
+]
