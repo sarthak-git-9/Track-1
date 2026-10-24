@@ -57,3 +57,69 @@ def test_residual_identifier_verification_failure_blocks_export(monkeypatch):
             "session_id": data["session_id"], "format": "md",
         })
         assert exported.status_code == 409
+
+
+
+def test_pdf_redaction_end_to_end_and_authentication():
+    import base64
+    import pymupdf
+
+    with pymupdf.open() as doc:
+        page = doc.new_page()
+        page.insert_text((72, 72), "Contact alice@example.test for the report.")
+        original_pdf = doc.tobytes()
+
+    with TestClient(app) as client:
+        headers = {"X-Bharosa-Token": API_TOKEN}
+        payload = {
+            "filename": "synthetic.pdf",
+            "content_b64": base64.b64encode(original_pdf).decode("ascii"),
+        }
+        unauthorized = client.post("/redact/pdf/start", json=payload)
+        assert unauthorized.status_code == 401
+
+        started = client.post("/redact/pdf/start", headers=headers, json=payload)
+        assert started.status_code == 200, started.text
+        data = started.json()
+        assert any(item["value"] == "alice@example.test" for item in data["findings"])
+
+        premature = client.post("/redact/export", headers=headers, json={
+            "session_id": data["session_id"], "format": "pdf"
+        })
+        assert premature.status_code == 409
+
+        decisions = {item["id"]: item["value"] == "alice@example.test" for item in data["findings"]}
+        updated = client.post("/redact/update", headers=headers, json={
+            "session_id": data["session_id"], "decisions": decisions
+        })
+        assert updated.status_code == 200
+
+        verified = client.post("/redact/verify", headers=headers, json={
+            "session_id": data["session_id"]
+        })
+        assert verified.status_code == 200, verified.text
+        assert verified.json()["status"] == "pass", verified.text
+
+        exported = client.post("/redact/export", headers=headers, json={
+            "session_id": data["session_id"], "format": "pdf"
+        })
+        assert exported.status_code == 200
+        assert exported.headers["content-type"].startswith("application/pdf")
+        assert exported.content.startswith(b"%PDF-")
+
+        with pymupdf.open(stream=exported.content, filetype="pdf") as result_pdf:
+            extracted = "\n".join(page.get_text("text") for page in result_pdf)
+        assert "alice@example.test" not in extracted
+
+
+def test_pdf_redaction_rejects_non_pdf_payload():
+    import base64
+
+    with TestClient(app) as client:
+        response = client.post("/redact/pdf/start",
+            headers={"X-Bharosa-Token": API_TOKEN},
+            json={
+                "filename": "fake.pdf",
+                "content_b64": base64.b64encode(b"not a pdf").decode("ascii"),
+            })
+        assert response.status_code == 422

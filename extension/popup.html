@@ -27,7 +27,7 @@
 
     <section id="panel-redact" class="panel">
       <div class="section-heading"><div><h2>Privacy Shield</h2><p>Review sensitive findings before replacing them.</p></div><span class="step-number">01</span></div>
-      <label class="file-drop" for="document-file"><span class="file-icon">↥</span><strong>Choose a TXT or Markdown file</strong><small>Text-based .txt and .md only in this build</small><input id="document-file" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown"></label>
+      <label class="file-drop" for="document-file"><span class="file-icon">↥</span><strong>Choose a TXT, Markdown, or PDF file</strong><small>PDF support is for selectable page text only. Scanned PDFs are unsupported; metadata, images, forms, and attachments may still contain information.</small><input id="document-file" type="file" accept=".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf"></label>
       <div class="action-row"><button id="scan-document" class="button button-primary" disabled>Find sensitive data</button><button id="clear-session" class="button button-quiet" disabled>Clear</button></div>
       <p id="redact-message" class="message" role="status">Choose a synthetic test document to start. Nothing is changed until you approve findings.</p>
       <div id="findings-section" class="hidden">
@@ -36,7 +36,7 @@
         <div class="inline-controls missed-item-row"><input id="missed-value" type="text" maxlength="300" placeholder="Add a missed sensitive value"><select id="missed-type" aria-label="Type of missed value"><option value="person">Person</option><option value="address">Address</option><option value="organization">Organization</option><option value="other">Other</option></select><button id="add-missed" class="button button-small">Add</button></div>
         <button id="apply-decisions" class="button button-primary button-wide">Apply selected redactions</button>
         <div id="verification-panel" class="verification-panel hidden"></div>
-        <div class="export-row"><label for="export-format">Export format</label><select id="export-format"><option value="md">Markdown (.md)</option><option value="txt">Plain text (.txt)</option></select><button id="export-document" class="button" disabled>Download verified file</button></div>
+        <div class="export-row"><label for="export-format">Export format</label><select id="export-format"><option value="md">Markdown (.md)</option><option value="txt">Plain text (.txt)</option><option value="pdf" disabled>Redacted PDF (.pdf)</option></select><button id="export-document" class="button" disabled>Download verified file</button></div>
         <div class="preview-panel"><h3>Redacted preview</h3><pre id="redacted-preview">Your preview will appear here after applying decisions.</pre></div>
       </div>
     </section>

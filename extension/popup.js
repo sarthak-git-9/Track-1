@@ -1,6 +1,7 @@
 const API_BASE = 'http://127.0.0.1:8765';
 const $ = (id) => document.getElementById(id);
 let activeSessionId = null;
+let activeDocumentType = 'text';
 let activeFindings = [];
 let pendingAdditions = [];
 let redactedAndVerified = false;
@@ -87,6 +88,9 @@ function renderFindings(findings) {
 
 function clearRedactionUi(message = 'Session cleared. The backend removed this document from memory.') {
   activeSessionId = null;
+  activeDocumentType = 'text';
+  $('export-format').value = 'md';
+  Array.from($('export-format').options).forEach((option) => { option.disabled = option.value === 'pdf'; });
   activeFindings = [];
   pendingAdditions = [];
   redactedAndVerified = false;
@@ -121,13 +125,35 @@ $('scan-document').addEventListener('click', async () => {
   const file = $('document-file').files?.[0];
   if (!file) return;
   if (!token()) return setMessage($('redact-message'), 'Save the backend token before scanning.', 'error');
-  if (!/\.(txt|md|markdown)$/i.test(file.name)) return setMessage($('redact-message'), 'Only text-based .txt and .md files are supported in this starter.', 'error');
-  if (file.size > 500000) return setMessage($('redact-message'), 'For this prototype, keep files below 500 KB.', 'error');
-  setMessage($('redact-message'), 'Reading and scanning in memory. Please keep this popup open…');
+  const isPdf = /\.pdf$/i.test(file.name);
+  const isText = /\.(txt|md|markdown)$/i.test(file.name);
+  if (!isPdf && !isText) return setMessage($('redact-message'), 'Choose a .txt, .md, .markdown, or selectable-text .pdf file.', 'error');
+  const maxBytes = isPdf ? 10 * 1024 * 1024 : 500000;
+  if (file.size > maxBytes) return setMessage($('redact-message'), isPdf ? 'PDFs must be 10 MB or smaller.' : 'For this prototype, keep text files below 500 KB.', 'error');
+  setMessage($('redact-message'), isPdf ? 'Encoding PDF for local scanning. Scanned PDFs are unsupported…' : 'Reading and scanning in memory. Please keep this popup open…');
   $('scan-document').disabled = true;
   try {
-    const content = await file.text();
-    const result = await api('/redact/start', {filename: file.name, content});
+    let result;
+    if (isPdf) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      }
+      result = await api('/redact/pdf/start', {
+        filename: file.name,
+        content_b64: btoa(binary),
+      });
+      activeDocumentType = 'pdf';
+      $('export-format').value = 'pdf';
+      Array.from($('export-format').options).forEach((option) => { option.disabled = option.value !== 'pdf'; });
+    } else {
+      const content = await file.text();
+      result = await api('/redact/start', {filename: file.name, content});
+      activeDocumentType = 'text';
+      $('export-format').value = 'md';
+      Array.from($('export-format').options).forEach((option) => { option.disabled = option.value === 'pdf'; });
+    }
     activeSessionId = result.session_id;
     redactedAndVerified = false;
     $('clear-session').disabled = false;
@@ -174,7 +200,10 @@ $('apply-decisions').addEventListener('click', async () => {
     panel.textContent = verification.status === 'pass'
       ? `✓ No leaks found by our checks. ${verification.approved_count} finding(s) approved. Amount/date integrity checks passed where supported. Detection is best-effort; review before sharing.`
       : `Verification failed. ${problems || 'Review the document and retry.'}`;
-    setMessage($('redact-message'), 'Review the preview and verification result before exporting.', verification.status === 'pass' ? 'success' : 'error');
+    const successMessage = activeDocumentType === 'pdf'
+      ? `✓ Approved values are no longer extractable from PDF page text. ${verification.approved_count} finding(s) approved. Non-text content and metadata may still contain sensitive data.`
+      : 'Review the preview and verification result before exporting.';
+    setMessage($('redact-message'), successMessage, verification.status === 'pass' ? 'success' : 'error');
   } catch (error) {
     setMessage($('redact-message'), error.message, 'error');
   } finally {
