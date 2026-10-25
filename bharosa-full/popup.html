@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=400">
+<title>Bharosa</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<main id="app">
+  <header class="top">
+    <button class="back" id="back" aria-label="Back" hidden>
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <div class="brand">
+      <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="9" fill="#FFB627"/><rect x="8" y="11" width="16" height="4" rx="2" fill="#0D2B33"/><rect x="8" y="18" width="10" height="4" rx="2" fill="#0D2B33" opacity=".45"/></svg>
+      <span>Bharosa</span>
+    </div>
+    <span class="chip" id="chip"><i></i><em id="chipTxt">Checking…</em></span>
+  </header>
+
+  <!-- HOME -->
+  <section id="home" class="screen">
+    <h1>Trust, checked<br>on your device.</h1>
+    <p class="demo" aria-label="Example: paid 4,200 rupees to a person from a bank account">Paid ₹4,200 to <span class="r">Rahul Sharma</span> from A/c <span class="r">50100234567890</span></p>
+    <p class="sub">Amounts and dates stay. People and numbers go.</p>
+
+    <div class="cards">
+      <button class="card" data-go="redact-in">
+        <span class="ico a"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 7h14M5 12h8M5 17h11"/><rect x="14" y="10" width="6" height="4" rx="1.5" fill="currentColor" stroke="none"/></svg></span>
+        <span class="ct"><b>Redact a document</b><small>Remove names, numbers and IDs before you paste it into an AI or cloud tool.</small></span>
+      </button>
+      <button class="card" data-go="verify">
+        <span class="ico b"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 5-3.2 8.3-7 10-3.8-1.700-7-5-7-10V6z"/><path d="M9 12l2.200 2.200L15.500 10"/></svg></span>
+        <span class="ct"><b>Check a website</b><small>See whether this page is genuine, with the evidence behind the answer.</small></span>
+      </button>
+    </div>
+    <button class="link" id="leaves">What leaves this device?</button>
+    <p id="aiMsg" class="hint"></p>
+    <div id="sheet" class="sheet" hidden>
+      <p><b>Never leaves:</b> your document text and the page you are viewing.</p>
+      <p><b>May leave:</b> only the web address of a site you check, when Bharosa looks up its registration date (rdap.org). Nothing else is sent anywhere.</p>
+      <button class="ghost" id="closeSheet">Got it</button>
+    </div>
+  </section>
+
+  <!-- REDACT 1: add -->
+  <section id="redact-in" class="screen" hidden>
+    <ol class="steps" aria-label="Steps"><li class="on">Add</li><li>Review</li><li>Export</li></ol>
+    <h2>Add the document</h2>
+    <button class="ghost" id="sample" type="button">Try sample statement</button>
+    <label class="drop" id="drop" tabindex="0">
+      <input type="file" id="file" accept=".txt,.md,.csv,.text,.pdf" hidden>
+      <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0L7 9m5-5l5 5M5 20h14"/></svg>
+      <b id="dropT">Drop a .pdf, .txt or .md file</b>
+      <small id="dropS">or click to choose. Scanned PDFs are not supported.</small>
+    </label>
+    <p class="or">or paste the text</p>
+    <input id="pw" type="password" placeholder="PDF password (used in memory only)" hidden class="pwin" autocomplete="off">
+    <textarea id="paste" rows="6" spellcheck="false" placeholder="Paste a bank statement, letter or notes here"></textarea>
+    <p class="err" id="err" role="alert" hidden></p>
+    <div class="row">
+      <button class="primary" id="scan">Find private details</button>
+    </div>
+  </section>
+
+  <!-- REDACT 2: review -->
+  <section id="redact-review" class="screen" hidden>
+    <ol class="steps"><li class="done">Add</li><li class="on">Review</li><li>Export</li></ol>
+    <div class="head2"><h2>Review what goes</h2><span id="count" class="count"></span></div>
+    <div id="doc" class="doc" tabindex="0" aria-label="Document with findings highlighted"></div>
+    <p class="hint">Tap a highlight to keep or hide it. Select any text and add what we missed.</p>
+    <div id="list" class="list"></div>
+    <div class="row">
+      <button class="ghost" id="addSel">Hide selected text</button>
+      <button class="primary" id="toExport">Redact and check</button>
+    </div>
+  </section>
+
+  <!-- REDACT 3: export -->
+  <section id="redact-out" class="screen" hidden>
+    <ol class="steps"><li class="done">Add</li><li class="done">Review</li><li class="on">Export</li></ol>
+    <div id="verdict" class="verdict"></div>
+    <pre id="out" class="doc out" tabindex="0"></pre>
+    <div class="row">
+      <button class="ghost" id="copy">Copy text</button>
+      <button class="ghost" id="dlTxt">.txt</button><button class="ghost" id="dlPdf">.pdf</button>
+      <button class="primary" id="dlMd">.md</button>
+    </div>
+    <button class="link" id="clear">Clear this session</button>
+  </section>
+
+  <!-- VERIFY -->
+  <section id="verify" class="screen" hidden>
+    <h2>Check a website</h2>
+    <p class="sub left">Reads this page on your device and checks the address. Reviews and ownership records are not checked yet.</p>
+    <div class="seg" role="tablist"><button class="on" id="mTab" role="tab">This page</button><button id="mLink" role="tab">Paste a link</button></div>
+    <div class="urlbox"><input id="url" type="text" spellcheck="false" placeholder="https://" readonly><button class="primary" id="check">Check</button></div>
+    <div id="vres" hidden>
+      <div id="vcat" class="vcat"><span id="vicon"></span><div><b id="vlabel"></b><p id="vreason"></p></div></div>
+      <p class="note">Risk assessment, not a guarantee.</p>
+      <h3>Evidence</h3>
+      <ul id="vlog" class="log"></ul>
+    </div>
+  </section>
+</main>
+<script src="engine.js"></script>
+<script src="pdfio.js"></script>
+<script src="ai.js"></script>
+<script src="sample.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>
